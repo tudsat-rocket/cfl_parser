@@ -7,6 +7,8 @@ use std::fs::File;
 
 mod datatypes;
 use datatypes::*;
+use shared_types::{GPSDatum, VehicleState};
+use nalgebra::{UnitQuaternion, Vector3};
 
 // Scaling factors for data points
 const GYRO_DIV: f32 = 14.28;
@@ -66,11 +68,8 @@ fn main() -> io::Result<()> {
 
     println!("Detected version {:?}", version_string);
 
-    let mut first_timestamp: Option<u32> = None;
-    let mut last_timestamp: u32 = 0;
-
     // Initialize empty flight log
-    let mut flight_log: FlightLog = FlightLog::default();    
+    let mut vehicle_states: Vec<VehicleState> = Vec::new();  
 
     // iterate over the rest of the file until its done
     //  -8 because some .cfl files have corrupt endings
@@ -82,103 +81,169 @@ fn main() -> io::Result<()> {
         i += 8;
 
         // Get sensor id and type field separately
-        let sensor_id = t & REC_ID_MASK;
+        // unused? // let sensor_id = t & REC_ID_MASK;
         let t_without_id = t & !REC_ID_MASK;
-
-        // How does if let work
-        if first_timestamp == None {
-            first_timestamp = Some(ts);
-        }
 
         let record_type = RecordType::from(t_without_id);
         match record_type {
             RecordType::Imu => {
-                flight_log.imu_records.push(ImuRecord { 
-                    timestamp: ts, 
-                    id: format!("IMU{:?}", sensor_id), 
-                    acc_x: read_u16_le(&buffer, i) as f32 / ACC_DIV,
-                    acc_y: read_u16_le(&buffer, i + 2) as f32 / ACC_DIV,
-                    acc_z: read_u16_le(&buffer, i + 4) as f32 / ACC_DIV, 
-                    gyro_x: read_u16_le(&buffer, i + 6) as f32 / GYRO_DIV, 
-                    gyro_y: read_u16_le(&buffer, i + 8) as f32 / GYRO_DIV, 
-                    gyro_z: read_u16_le(&buffer, i + 10) as f32 / GYRO_DIV 
-                });
+                // Read out acceleration
+                let acc_x = read_u16_le(&buffer, i) as f32 / ACC_DIV;
+                let acc_y = read_u16_le(&buffer, i + 2) as f32 / ACC_DIV;
+                let acc_z = read_u16_le(&buffer, i + 4) as f32 / ACC_DIV;
+
+                // Read out gyro
+                let gyro_x = read_u16_le(&buffer, i + 6) as f32 / GYRO_DIV;
+                let gyro_y = read_u16_le(&buffer, i + 8) as f32 / GYRO_DIV;
+                let gyro_z = read_u16_le(&buffer, i + 10) as f32 / GYRO_DIV;
+                
+                // Increment index
                 i += 12;
+
+                // Push a new vehicle state into the list
+                vehicle_states.push(VehicleState {
+                    accelerometer1: Some(Vector3::new(acc_x, acc_y, acc_z)),
+                    gyroscope: Some(Vector3::new(gyro_x, gyro_y, gyro_z)),
+                    time: ts,
+                    ..Default::default()
+                });
+                
             }
             RecordType::Baro => {
-                flight_log.baro_records.push(BaroRecord { 
-                    timestamp: ts,
-                    id: format!("BARO{:?}", sensor_id),
-                    pressure: read_u32_le(&buffer, i),
-                    temp: read_u32_le(&buffer, i + 4) as f32 / TEMP_DIV
-                });
+                // Read out pressure and temperature
+                let pressure = read_u32_le(&buffer, i) as f32; // TODO: this cast is wrong, look into sensor output differences
+                let temp = read_u32_le(&buffer, i + 4) as f32 / TEMP_DIV;
+
+                // Increment index
                 i += 8;
+
+                // Push new vehicle state into the list
+                vehicle_states.push(VehicleState {
+                    pressure_baro: Some(pressure),
+                    temperature_baro: Some(temp),
+                    time: ts,
+                    ..Default::default()
+                });
             }
             RecordType::FlightInfo => {
-                flight_log.flight_info_records.push(FlightInfoRecord {
-                    timestamp: ts,
-                    height: read_f32_le(&buffer, i),
-                    velocity: read_f32_le(&buffer, i + 4), 
-                    acceleration: read_f32_le(&buffer, i + 8) 
+                // Read out height / velocity / acceleration (again?)
+                let height = read_f32_le(&buffer, i);
+                let velocity = read_f32_le(&buffer, i + 4); 
+                let acceleration = read_f32_le(&buffer, i + 8);
+
+                // Increment index
+                i += 12;
+
+                // And push to vehicle states again
+                //   these fields are very much guesswork
+                vehicle_states.push(VehicleState {
+                    altitude_asl: Some(height),
+                    vertical_speed: Some(velocity),
+                    vertical_accel: Some(acceleration),
+                    time: ts,
+                    ..Default::default()
                 });
-                i += 12
             }
             RecordType::OrientationInfo => {
-                flight_log.orientation_info_records.push(OrientationInfoRecord {
-                    timestamp: ts,
-                    q0_estimated: read_u16_le(&buffer, i) as f32 / Q_DIV,
-                    q1_estimated: read_u16_le(&buffer, i + 2) as f32 / Q_DIV,
-                    q2_estimated: read_u16_le(&buffer, i + 4) as f32 / Q_DIV,
-                    q3_estimated: read_u16_le(&buffer, i + 6) as f32 / Q_DIV 
-                });
+                // Read out quaternion fields
+                let q0_estimated = read_u16_le(&buffer, i) as f32 / Q_DIV;
+                let q1_estimated = read_u16_le(&buffer, i + 2) as f32 / Q_DIV;
+                let q2_estimated = read_u16_le(&buffer, i + 4) as f32 / Q_DIV;
+                let q3_estimated = read_u16_le(&buffer, i + 6) as f32 / Q_DIV; // TODO: these are four values, don't quaternions only have three?!
+
+                // Increment i again
                 i += 8;
+
+                // Push to vehicle states
+                vehicle_states.push(VehicleState {
+                    orientation: Some(UnitQuaternion::new(Vector3::new(q0_estimated, q1_estimated, q2_estimated))),
+                    time: ts,
+                    ..Default::default()
+                });
             }
             RecordType::FilteredDataInfo => {
-                flight_log.filtered_data_info_records.push(FilteredDataInfoRecord { 
-                    timestamp: ts, 
-                    filtered_altitude_agl: read_f32_le(&buffer, i), 
-                    filtered_acceleration: read_f32_le(&buffer, i + 4) 
-                });
+                // WHERE should these go?? 
+                let filtered_altitude_agl = read_f32_le(&buffer, i);
+                let filtered_acceleration = read_f32_le(&buffer, i + 4);
+                
+                // Da incrementy
                 i += 8;
+
+                // Push vehicleground
+                vehicle_states.push(VehicleState {
+                    vertical_accel_filtered: Some(filtered_acceleration),
+                    altitude_asl: Some(filtered_altitude_agl),
+                    time: ts,
+                    ..Default::default()
+                });
             }
             RecordType::FlightState => {
-                flight_log.flight_state_records.push(FlightStateInfoRecord { 
-                    timestamp: ts,
-                    state:  read_u32_le(&buffer, i)
-                });
+                // TODO: This needs more complex mapping
+                let state =  read_u32_le(&buffer, i);
+
+                // I-ncrement
                 i += 4;
+
+                // No push, print for now
+                println!("Flight State: {:?}", state);
             }
             RecordType::EventInfo => {
-                flight_log.event_info_records.push(EventInfoRecord { 
-                    timestamp: ts,
-                    event: read_u32_le(&buffer, i), 
-                    action: read_u16_le(&buffer, i + 4), 
-                    argument: read_u16_le(&buffer, i + 6) 
-                });
+                // Again, kinda CATS specific
+                let event = read_u32_le(&buffer, i);
+                let action = read_u16_le(&buffer, i + 4);
+                let argument = read_u16_le(&buffer, i + 6);
+
+                // Increment accordingly
                 i += 8;
+
+                // And print as well for now..
+                println!("Event Info: {:?} / {:?} / {:?}", event, action, argument);
             }
             RecordType::ErrorInfo => {
-                flight_log.error_info_records.push(ErrorInfoRecord { 
-                    timestamp: ts,
-                    error: read_u32_le(&buffer, i) 
-                });
+                // Erreur                
+                let error = read_u32_le(&buffer, i);
+                
+                // Inc. rement
                 i += 4;
+                
+                // print again
+                println!("Error: {:?}", error);
             }
             RecordType::GNSSInfo => {
-                flight_log.gnss_info_records.push(GNSSInfoRecord { 
-                    timestamp: ts,
-                    latitude: read_f32_le(&buffer, i), 
-                    longitude: read_f32_le(&buffer, i + 4), 
-                    sattelites: read_u8_le(&buffer, i + 8) 
-                });
+                // Read out fields
+                let latitude = read_f32_le(&buffer, i);
+                let longitude = read_f32_le(&buffer, i + 4);
+                let sattelites = read_u8_le(&buffer, i + 8);
+
+                // Increment index
                 i += 9;
+
+                let gps_datum = GPSDatum {
+                    latitude: Some(latitude),
+                    longitude: Some(longitude),
+                    num_satellites: sattelites,  
+                    ..Default::default()
+                };
+                // Put it into vehicle states
+                vehicle_states.push(VehicleState {
+                    gps: Some(gps_datum),
+                    time: ts,
+                    ..Default::default()
+                });
             }
             RecordType::VoltageInfo => {
-                flight_log.voltage_info_records.push(VoltageInfoRecord { 
-                    timestamp: ts,
-                    voltage: read_u16_le(&buffer, i) as f32 / VOLT_DIV
-                });
+                // Get the volts
+                let voltage = read_u16_le(&buffer, i) as f32 / VOLT_DIV;
+                
+                // Add the bytes
                 i += 2;
+
+                // Push the state
+                vehicle_states.push(VehicleState {
+                    battery_voltage: Some(voltage as u16), // TODO: check this cast
+                    time: ts,
+                    ..Default::default()
+                });
             }
             RecordType::UnknownError => {
                 println!("Encountered unknown Record ID {:?} at index {:?}", t_without_id, i - 4);
@@ -186,35 +251,11 @@ fn main() -> io::Result<()> {
                 break;
             }
         }
-        last_timestamp = ts;
     }
     println!("Done parsing.");
 
-    // Find start of launch and offset timestamps
-    let zero_timestamp = first_timestamp.unwrap_or(0);
-    /*
-    Weird transformation where t=0 is liftoff and everything before is negative time
-    We're not gonna do that so we can keep using u32's :)
-    for ev in flight_log.event_info_records.iter() {
-        // Check if we have a liftoff event (code 2)
-        if ev.event == 2 {
-            zero_timestamp = ev.timestamp as u32;
-            println!("Found liftoff point: {:?}", ev.timestamp);
-            break;
-        }
-    }
-    */ 
-
-    // Adjust log's first&last timestamp
-    flight_log.first_timestamp = zero_timestamp / 1000;
-    flight_log.last_timestamp = last_timestamp / 1000;
-
-    // Offset and scale all timestamps accordingly
-    flight_log.offset_timestamps(zero_timestamp);
-
-    println!("Done offsetting timestamps.");  
-    
-    // TODO: Actually do something with the data..
+    // TODO: serialize collected vehicle states in json output file
+    println!("{:?}", vehicle_states.len());
 
     Ok(())
 }

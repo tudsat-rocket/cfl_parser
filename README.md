@@ -13,5 +13,6 @@ Run `cargo run [filename]` where *filename* points to a .cfl file.
 
 ## To Do
 
-Code might need a little cleanup, some todo markers are left
-Also the parser just builds up its internal data structure and outputs nothing..
+- Output generated list of vehicle states as json file
+- Some sensor value types mismatched, check these
+- Maybe include the Flight State and Event Info records somehow?

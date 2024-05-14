@@ -6,3 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+nalgebra = "0.32.5"
+
+shared_types = { git = "https://github.com/tudsat-rocket/sam" }
+# TODO: Why do I need to use this as well?
+state_estimator = { git = "https://github.com/tudsat-rocket/sam" }

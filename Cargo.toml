@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 nalgebra = "0.32.5"
+serde_json = "1.0.117"
 
 shared_types = { git = "https://github.com/tudsat-rocket/sam" }
 # TODO: Why do I need to use this as well?

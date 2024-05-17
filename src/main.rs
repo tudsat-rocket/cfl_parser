@@ -2,12 +2,12 @@
 
 use std::process::exit;
 use std::{env, io};
-use std::io::prelude::*;
+use std::io::{prelude::*, BufWriter};
 use std::fs::File;
 
 mod datatypes;
 use datatypes::*;
-use shared_types::{GPSDatum, VehicleState};
+use shared_types::{DownlinkMessage, GPSDatum, TelemetryDiagnostics, TelemetryGPS, TelemetryMain, TelemetryRawSensors, VehicleState};
 use nalgebra::{UnitQuaternion, Vector3};
 
 // Scaling factors for data points
@@ -69,7 +69,22 @@ fn main() -> io::Result<()> {
     println!("Detected version {:?}", version_string);
 
     // Initialize empty flight log
-    let mut vehicle_states: Vec<VehicleState> = Vec::new();  
+    let mut downlink_messages: Vec<DownlinkMessage> = Vec::new();
+
+    // Initialize mutable struct templates that can be copied with only the updated data
+    let mut telemetry_main_template = TelemetryMain {
+        ..Default::default()
+    };
+    let mut telemetry_raw_sensors_template = TelemetryRawSensors {
+        ..Default::default()
+    };
+    let mut telemetry_diagnostic_template = TelemetryDiagnostics {
+        ..Default::default()
+    };
+    let mut telemetry_gps_template = TelemetryGPS {
+        ..Default::default()
+    };
+    // Whenever a new data point is found in the input file, adjust the template and push a copy
 
     // iterate over the rest of the file until its done
     //  -8 because some .cfl files have corrupt endings
@@ -100,14 +115,14 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 12;
 
-                // Push a new vehicle state into the list
-                vehicle_states.push(VehicleState {
-                    accelerometer1: Some(Vector3::new(acc_x, acc_y, acc_z)),
-                    gyroscope: Some(Vector3::new(gyro_x, gyro_y, gyro_z)),
-                    time: ts,
-                    ..Default::default()
-                });
+                // Update last TelemetryRawSensors
+                telemetry_raw_sensors_template.time = ts;
+                telemetry_raw_sensors_template.gyro = Vector3::new(gyro_x, gyro_y, gyro_z);
+                telemetry_raw_sensors_template.accelerometer1 = Vector3::new(acc_x, acc_y, acc_z);
                 
+                // Push a copy to the list of downlink messages
+                let msg = DownlinkMessage::TelemetryRawSensors(telemetry_raw_sensors_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::Baro => {
                 // Read out pressure and temperature
@@ -117,13 +132,20 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 8;
 
-                // Push new vehicle state into the list
-                vehicle_states.push(VehicleState {
-                    pressure_baro: Some(pressure),
-                    temperature_baro: Some(temp),
-                    time: ts,
-                    ..Default::default()
-                });
+                // Update TelemetryRawSensors with pressure value
+                telemetry_raw_sensors_template.pressure_baro = pressure;
+                telemetry_raw_sensors_template.time = ts;
+                let sensor_msg = DownlinkMessage::TelemetryRawSensors(telemetry_raw_sensors_template.clone());
+                downlink_messages.push(sensor_msg);
+                
+
+                // Update TelemetryDiagnostics with temperature
+                telemetry_diagnostic_template.temperature_baro = temp as i8;
+                telemetry_diagnostic_template.time = ts;
+                let diagnostic_msg = DownlinkMessage::TelemetryDiagnostics(telemetry_diagnostic_template.clone());
+                downlink_messages.push(diagnostic_msg);
+
+                
             }
             RecordType::FlightInfo => {
                 // Read out height / velocity / acceleration (again?)
@@ -134,15 +156,15 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 12;
 
-                // And push to vehicle states again
-                //   these fields are very much guesswork
-                vehicle_states.push(VehicleState {
-                    altitude_asl: Some(height),
-                    vertical_speed: Some(velocity),
-                    vertical_accel: Some(acceleration),
-                    time: ts,
-                    ..Default::default()
-                });
+                // Add these values to the telemetrymain template
+                telemetry_main_template.altitude = height;
+                telemetry_main_template.vertical_speed = velocity;
+                telemetry_main_template.vertical_accel = acceleration;
+                telemetry_main_template.time = ts;
+
+                // Push a copy to downlink messages
+                let msg = DownlinkMessage::TelemetryMain(telemetry_main_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::OrientationInfo => {
                 // Read out quaternion fields
@@ -154,12 +176,13 @@ fn main() -> io::Result<()> {
                 // Increment i again
                 i += 8;
 
-                // Push to vehicle states
-                vehicle_states.push(VehicleState {
-                    orientation: Some(UnitQuaternion::new(Vector3::new(q0_estimated, q1_estimated, q2_estimated))),
-                    time: ts,
-                    ..Default::default()
-                });
+                // Put value into Telemetry Main
+                telemetry_main_template.orientation = Some(UnitQuaternion::new(Vector3::new(q0_estimated, q1_estimated, q2_estimated)));
+                telemetry_main_template.time = ts;
+
+                // Push to downlink messages
+                let msg = DownlinkMessage::TelemetryMain(telemetry_main_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::FilteredDataInfo => {
                 // WHERE should these go?? 
@@ -169,13 +192,14 @@ fn main() -> io::Result<()> {
                 // Da incrementy
                 i += 8;
 
-                // Push vehicleground
-                vehicle_states.push(VehicleState {
-                    vertical_accel_filtered: Some(filtered_acceleration),
-                    altitude_asl: Some(filtered_altitude_agl),
-                    time: ts,
-                    ..Default::default()
-                });
+                // Update TelemetryMain template
+                telemetry_main_template.altitude = filtered_altitude_agl;
+                telemetry_main_template.vertical_accel_filtered = filtered_acceleration;
+                telemetry_main_template.time = ts;
+
+                // Push copy as always
+                let msg = DownlinkMessage::TelemetryMain(telemetry_main_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::FlightState => {
                 // TODO: This needs more complex mapping
@@ -218,18 +242,15 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 9;
 
-                let gps_datum = GPSDatum {
-                    latitude: Some(latitude),
-                    longitude: Some(longitude),
-                    num_satellites: sattelites,  
-                    ..Default::default()
-                };
-                // Put it into vehicle states
-                vehicle_states.push(VehicleState {
-                    gps: Some(gps_datum),
-                    time: ts,
-                    ..Default::default()
-                });
+                // TODO: How to map these?
+                //telemetry_gps_template.latitude
+                //telemetry_gps_template.longitude
+                telemetry_gps_template.fix_and_sats = sattelites;
+                telemetry_gps_template.time = ts;
+
+                // Copy and push
+                let msg = DownlinkMessage::TelemetryGPS(telemetry_gps_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::VoltageInfo => {
                 // Get the volts
@@ -238,12 +259,13 @@ fn main() -> io::Result<()> {
                 // Add the bytes
                 i += 2;
 
+                // Update the fields
+                telemetry_diagnostic_template.battery_voltage = voltage as u16;
+                telemetry_diagnostic_template.time = ts;
+
                 // Push the state
-                vehicle_states.push(VehicleState {
-                    battery_voltage: Some(voltage as u16), // TODO: check this cast
-                    time: ts,
-                    ..Default::default()
-                });
+                let msg = DownlinkMessage::TelemetryDiagnostics(telemetry_diagnostic_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::UnknownError => {
                 println!("Encountered unknown Record ID {:?} at index {:?}", t_without_id, i - 4);
@@ -254,8 +276,11 @@ fn main() -> io::Result<()> {
     }
     println!("Done parsing.");
 
-    // TODO: serialize collected vehicle states in json output file
-    println!("{:?}", vehicle_states.len());
+    // Just dump it to a file
+    let out_file = File::create("out.json")?;
+    let mut writer = BufWriter::new(out_file);
+    serde_json::to_writer(&mut writer, &downlink_messages).unwrap();
+    writer.flush()?;
 
     Ok(())
 }

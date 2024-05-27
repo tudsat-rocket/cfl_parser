@@ -13,5 +13,4 @@ Run `cargo run [filename]` where *filename* points to a .cfl file. Will output *
 
 ## To Do
 
-- check baro pressure values
 - fix orientation quaternion values

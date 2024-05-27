@@ -9,13 +9,14 @@ use std::path::Path;
 mod datatypes;
 use datatypes::*;
 use shared_types::{DownlinkMessage, GPSDatum, TelemetryDiagnostics, TelemetryGPS, TelemetryMain, TelemetryRawSensors, VehicleState};
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Quaternion, Unit, Vector3};
 
 // Scaling factors for data points
 const GYRO_DIV: f32 = 14.28;
 const ACC_DIV: f32 = 1024.0 / 9.81;
 const Q_DIV: f32 = 1000.0;
 const TEMP_DIV: f32 = 100.0;
+const BARO_DIV: f32 = 100.0; // Note: Not in CATS parser, but they record in hPa, we plot in bar
 const VOLT_DIV: f32 = 1000.0;
 
 const REC_ID_MASK: u32 = 0x0000000F;
@@ -127,7 +128,7 @@ fn main() -> io::Result<()> {
             }
             RecordType::Baro => {
                 // Read out pressure and temperature
-                let pressure = read_u32_le(&buffer, i) as f32; // TODO: this cast looks wrong, but the two sensors are very similar?
+                let pressure = read_u32_le(&buffer, i) as f32 / BARO_DIV;
                 let temp = read_u32_le(&buffer, i + 4) as f32 / TEMP_DIV;
 
                 // Increment index
@@ -169,16 +170,19 @@ fn main() -> io::Result<()> {
             }
             RecordType::OrientationInfo => {
                 // Read out quaternion fields
-                let q0_estimated = read_u16_le(&buffer, i) as f32 / Q_DIV;
-                let q1_estimated = read_u16_le(&buffer, i + 2) as f32 / Q_DIV;
-                let q2_estimated = read_u16_le(&buffer, i + 4) as f32 / Q_DIV;
-                let q3_estimated = read_u16_le(&buffer, i + 6) as f32 / Q_DIV; // TODO: these are four values, don't quaternions only have three?!
+                let q0 = read_u16_le(&buffer, i) as f32 / Q_DIV;
+                let q1 = read_u16_le(&buffer, i + 2) as f32 / Q_DIV;
+                let q2 = read_u16_le(&buffer, i + 4) as f32 / Q_DIV;
+                let q3 = read_u16_le(&buffer, i + 6) as f32 / Q_DIV;
 
                 // Increment i again
                 i += 8;
 
+                // Construct quaternion from  the parsed values
+                let q = Quaternion::new(q0, q1, q2, q3);
+
                 // Put value into Telemetry Main
-                telemetry_main_template.orientation = Some(UnitQuaternion::new(Vector3::new(q0_estimated, q1_estimated, q2_estimated)));
+                telemetry_main_template.orientation = Some(Unit::new_normalize(q));
                 telemetry_main_template.time = ts;
 
                 // Push to downlink messages
@@ -247,8 +251,6 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 9;
 
-                println!("{:?}, {:?}", latitude, longitude);
-
                 // Hacky way but I don´t want to re-implement the f32 <-> [u8; 3] conversion logic..
                 let gps: GPSDatum = GPSDatum {
                     latitude: Some(latitude),
@@ -268,8 +270,6 @@ fn main() -> io::Result<()> {
                 telemetry_gps_template.latitude = temp_state.latitude;
                 telemetry_gps_template.longitude = temp_state.longitude;
                 telemetry_gps_template.time = ts;
-
-                println!("Lat: {:?}, Long: {:?}", temp_state.latitude, temp_state.longitude);
 
                 // Copy and push
                 let msg = DownlinkMessage::TelemetryGPS(telemetry_gps_template.clone());

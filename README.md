@@ -9,12 +9,9 @@ Run `cargo build`
 
 ## Usage
 
-Run `cargo run [filename]` where *filename* points to a .cfl file.
+Run `cargo run [filename]` where *filename* points to a .cfl file. Will output *filename*.json.
 
 ## To Do
 
 - check baro pressure values
 - fix orientation quaternion values
-- include flight state updates
-- include latitude / longitude values in gps messages
-- make `out.json` more flexible

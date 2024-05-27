@@ -1,9 +1,10 @@
 // See https://github.com/catsystems/cats-configurator/blob/main/src/modules/logparser.js#L150
-
+// Also see https://github.com/catsystems/cats-embedded/blob/main/flight_computer/src/flash/recorder.hpp
 use std::process::exit;
 use std::{env, io};
 use std::io::{prelude::*, BufWriter};
 use std::fs::File;
+use std::path::Path;
 
 mod datatypes;
 use datatypes::*;
@@ -126,7 +127,7 @@ fn main() -> io::Result<()> {
             }
             RecordType::Baro => {
                 // Read out pressure and temperature
-                let pressure = read_u32_le(&buffer, i) as f32; // TODO: this cast is wrong, look into sensor output differences
+                let pressure = read_u32_le(&buffer, i) as f32; // TODO: this cast looks wrong, but the two sensors are very similar?
                 let temp = read_u32_le(&buffer, i + 4) as f32 / TEMP_DIV;
 
                 // Increment index
@@ -202,14 +203,18 @@ fn main() -> io::Result<()> {
                 downlink_messages.push(msg);
             }
             RecordType::FlightState => {
-                // TODO: This needs more complex mapping
-                let state =  read_u32_le(&buffer, i);
+                let state: CATSFlightState = CATSFlightState::from(read_u32_le(&buffer, i) as u8);
 
                 // I-ncrement
                 i += 4;
 
-                // No push, print for now
-                println!("Flight State: {:?}", state);
+                // Map state to FlightMode used by SAM
+                telemetry_main_template.mode = state.into();
+                telemetry_main_template.time = ts;
+
+                // Push copy
+                let msg = DownlinkMessage::TelemetryMain(telemetry_main_template.clone());
+                downlink_messages.push(msg);
             }
             RecordType::EventInfo => {
                 // Again, kinda CATS specific
@@ -242,11 +247,29 @@ fn main() -> io::Result<()> {
                 // Increment index
                 i += 9;
 
-                // TODO: How to map these?
-                //telemetry_gps_template.latitude
-                //telemetry_gps_template.longitude
+                println!("{:?}, {:?}", latitude, longitude);
+
+                // Hacky way but I don´t want to re-implement the f32 <-> [u8; 3] conversion logic..
+                let gps: GPSDatum = GPSDatum {
+                    latitude: Some(latitude),
+                    longitude: Some(longitude),
+                    num_satellites: sattelites,
+                    // TODO: could include a GPSFixType but which one would be best?
+                    ..Default::default()
+                };
+                let temp_state: TelemetryGPS = VehicleState {
+                    latitude: Some(latitude),
+                    longitude: Some(longitude),
+                    gps: Some(gps),
+                    ..Default::default()
+                }.into();
+                
                 telemetry_gps_template.fix_and_sats = sattelites;
+                telemetry_gps_template.latitude = temp_state.latitude;
+                telemetry_gps_template.longitude = temp_state.longitude;
                 telemetry_gps_template.time = ts;
+
+                println!("Lat: {:?}, Long: {:?}", temp_state.latitude, temp_state.longitude);
 
                 // Copy and push
                 let msg = DownlinkMessage::TelemetryGPS(telemetry_gps_template.clone());
@@ -276,11 +299,16 @@ fn main() -> io::Result<()> {
     }
     println!("Done parsing.");
 
+    // Create output file name as input_without_ending.json
+    let out_file_name = Path::new(&args[1]).with_extension("json");
+
     // Just dump it to a file
-    let out_file = File::create("out.json")?;
+    let out_file = File::create(out_file_name)?;
     let mut writer = BufWriter::new(out_file);
     serde_json::to_writer(&mut writer, &downlink_messages).unwrap();
     writer.flush()?;
+
+    println!("Output written successfully.");
 
     Ok(())
 }

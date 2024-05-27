@@ -1,3 +1,6 @@
+use serde_json::error::Category;
+use shared_types::FlightMode;
+
 #[derive(Debug)]
 pub enum RecordType {
   Imu = 1 << 4,
@@ -27,5 +30,47 @@ impl From<u32> for RecordType {
           0x2000 => Self::VoltageInfo,
           _ => Self::UnknownError
       }
+  }
+}
+
+// Taken from
+// https://github.com/catsystems/cats-configurator/blob/main/src/modules/plots.js#L86
+pub enum CATSFlightState {
+  Calibrating = 1,
+  Ready = 2,
+  Thrust = 3,
+  Coast = 4,
+  Drogue = 5,
+  Main = 6,
+  Touchdown = 7
+}
+
+// Manual mapping from CATS Flight States to the ones used by SAM
+impl From<CATSFlightState> for FlightMode {
+  fn from(x: CATSFlightState) -> Self {
+    match x {
+      CATSFlightState::Calibrating => Self::Idle,
+      CATSFlightState::Ready => Self::Armed,
+      CATSFlightState::Thrust => Self::Burn,
+      CATSFlightState::Coast => Self::Coast,
+      CATSFlightState::Drogue => Self::RecoveryDrogue,
+      CATSFlightState::Main => Self::RecoveryMain,
+      CATSFlightState::Touchdown => Self::Landed
+    }
+  }
+}
+
+impl From<u8> for CATSFlightState {
+  fn from(x: u8) -> Self {
+    match x {
+      1 => Self::Calibrating,
+      2 => Self::Ready,
+      3 => Self::Thrust,
+      4 => Self::Coast,
+      5 => Self::Drogue,
+      6 => Self::Main,
+      7 => Self::Touchdown,
+      _ => Self::Calibrating // This seems to be the default state?
+    }
   }
 }

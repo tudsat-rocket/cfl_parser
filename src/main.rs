@@ -9,7 +9,7 @@ use std::path::Path;
 mod datatypes;
 use datatypes::*;
 use shared_types::{DownlinkMessage, GPSDatum, TelemetryDiagnostics, TelemetryGPS, TelemetryMain, TelemetryRawSensors, VehicleState};
-use nalgebra::{UnitQuaternion, Quaternion, Unit, Vector3};
+use nalgebra::{Quaternion, Unit, Vector3};
 
 // Scaling factors for data points
 const GYRO_DIV: f32 = 14.28;
@@ -29,6 +29,11 @@ fn read_u32_le(buffer: &Vec<u8>, index: usize) -> u32 {
 fn read_u16_le(buffer: &Vec<u8>, index: usize) -> u16 {
     let buf_bytes = &buffer[index..index+2];
     return u16::from_le_bytes(buf_bytes.try_into().unwrap());
+}
+
+fn read_i16_le(buffer: &Vec<u8>, index: usize) -> i16 {
+    let buf_bytes = &buffer[index..index+2];
+    return i16::from_le_bytes(buf_bytes.try_into().unwrap());
 }
 
 fn read_u8_le(buffer: &Vec<u8>, index: usize) -> u8 {
@@ -170,10 +175,12 @@ fn main() -> io::Result<()> {
             }
             RecordType::OrientationInfo => {
                 // Read out quaternion fields
-                let q0 = read_u16_le(&buffer, i) as f32 / Q_DIV;
-                let q1 = read_u16_le(&buffer, i + 2) as f32 / Q_DIV;
-                let q2 = read_u16_le(&buffer, i + 4) as f32 / Q_DIV;
-                let q3 = read_u16_le(&buffer, i + 6) as f32 / Q_DIV;
+                let q0 = read_i16_le(&buffer, i) as f32 / Q_DIV;
+                let q1 = read_i16_le(&buffer, i + 2) as f32 / Q_DIV;
+                let q2 = read_i16_le(&buffer, i + 4) as f32 / Q_DIV;
+                let q3 = read_i16_le(&buffer, i + 6) as f32 / Q_DIV;
+
+                // TODO: fixed the overflow, but rocket is flying on the y axis...
 
                 // Increment i again
                 i += 8;
@@ -191,14 +198,14 @@ fn main() -> io::Result<()> {
             }
             RecordType::FilteredDataInfo => {
                 // WHERE should these go?? 
-                let filtered_altitude_agl = read_f32_le(&buffer, i);
+                //let filtered_altitude_agl = read_f32_le(&buffer, i);
                 let filtered_acceleration = read_f32_le(&buffer, i + 4);
                 
                 // Da incrementy
                 i += 8;
 
                 // Update TelemetryMain template
-                telemetry_main_template.altitude = filtered_altitude_agl;
+                //telemetry_main_template.altitude = filtered_altitude_agl; // TODO: Put this somewhere else maybe?
                 telemetry_main_template.vertical_accel_filtered = filtered_acceleration;
                 telemetry_main_template.time = ts;
 
@@ -283,7 +290,8 @@ fn main() -> io::Result<()> {
                 i += 2;
 
                 // Update the fields
-                telemetry_diagnostic_template.battery_voltage = voltage as u16;
+                // left-shift & factor to account for TelemetryDiagnostics::Into<VehicleState> and sam's plot.rs
+                telemetry_diagnostic_template.battery_voltage = ((voltage * 1000.0 )as u16) << 2;
                 telemetry_diagnostic_template.time = ts;
 
                 // Push the state

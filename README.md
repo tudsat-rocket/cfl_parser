@@ -13,4 +13,6 @@ Run `cargo run [filename]` where *filename* points to a .cfl file. Will output *
 
 ## To Do
 
-- fix orientation quaternion values
+- fix quaternion orientation to point up and not sideways
+- maybe add a GPSFixType to the GPSDatum
+- Include `filtered_altitude_agl` field somewhere in the telemetry messages

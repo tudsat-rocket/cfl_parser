@@ -1,4 +1,3 @@
-use serde_json::error::Category;
 use shared_types::FlightMode;
 
 #[derive(Debug)]
